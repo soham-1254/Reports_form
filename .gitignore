@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/
+
+# Local data
+data/winding_production.db
+data/reports/
+data/csv_backups/
+
+# OS
+.DS_Store
+Thumbs.db
