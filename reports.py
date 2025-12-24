@@ -1,169 +1,232 @@
-import streamlit as st
-import pandas as pd
 import sqlite3
 from pathlib import Path
+from datetime import date
+import pandas as pd
+import streamlit as st
 import matplotlib.pyplot as plt
 
-# ------------------ PAGE CONFIG ------------------
-st.set_page_config(page_title="Spool Winding Reports", layout="wide")
+# -------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------
+st.set_page_config(page_title="Spool Winding System", layout="wide")
 
+# -------------------------------------------------
+# PATH CONFIG
+# -------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "data" / "winding_production.db"
-REPORT_DIR = BASE_DIR / "data" / "reports"
-REPORT_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
 
-# ------------------ LOAD DATA SAFELY ------------------
-def load_data():
-    if not DB_PATH.exists():
-        st.error("❌ Database not found. Please run app.py and enter data first.")
-        st.stop()
+DB_PATH = DATA_DIR / "winding_production.db"
+CSV_DIR = DATA_DIR / "csv_backups"
+CSV_DIR.mkdir(exist_ok=True)
 
-    with sqlite3.connect(DB_PATH) as conn:
-        try:
-            df = pd.read_sql("SELECT * FROM winding_daily", conn)
-        except Exception:
-            st.error("❌ Table 'winding_daily' not found. Run app.py once.")
-            st.stop()
+REPORT_DIR = DATA_DIR / "reports"
+REPORT_DIR.mkdir(exist_ok=True)
 
+# -------------------------------------------------
+# DB HELPERS
+# -------------------------------------------------
+def get_conn():
+    return sqlite3.connect(DB_PATH)
+
+def init_db():
+    with get_conn() as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS winding_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            zone TEXT NOT NULL,
+            entry_date TEXT NOT NULL,
+            shift TEXT NOT NULL,
+            supervisor_name TEXT NOT NULL,
+            quality REAL NOT NULL,
+            avg_count REAL NOT NULL,
+            spindle INTEGER NOT NULL,
+            no_of_frame INTEGER NOT NULL,
+            no_of_winder INTEGER NOT NULL,
+            target_prod INTEGER NOT NULL,
+            actual_prod INTEGER NOT NULL,
+            kg_per_frame INTEGER NOT NULL,
+            kg_per_winder INTEGER NOT NULL,
+            diff INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """)
+        conn.commit()
+
+def insert_row(row):
+    with get_conn() as conn:
+        conn.execute("""
+        INSERT INTO winding_daily (
+            zone, entry_date, shift, supervisor_name,
+            quality, avg_count, spindle,
+            no_of_frame, no_of_winder,
+            target_prod, actual_prod,
+            kg_per_frame, kg_per_winder, diff
+        ) VALUES (
+            :zone, :entry_date, :shift, :supervisor_name,
+            :quality, :avg_count, :spindle,
+            :no_of_frame, :no_of_winder,
+            :target_prod, :actual_prod,
+            :kg_per_frame, :kg_per_winder, :diff
+        );
+        """, row)
+        conn.commit()
+
+def fetch_all():
+    with get_conn() as conn:
+        return pd.read_sql("SELECT * FROM winding_daily ORDER BY id DESC", conn)
+
+init_db()
+
+# -------------------------------------------------
+# SIDEBAR NAVIGATION
+# -------------------------------------------------
+st.sidebar.title("🧭 Navigation")
+page = st.sidebar.radio(
+    "Go to",
+    ["📝 Daily Entry", "📊 Reports"]
+)
+
+# =================================================
+# PAGE 1: DAILY ENTRY
+# =================================================
+if page == "📝 Daily Entry":
+
+    st.title("🧵 Spool Winding – Daily Production Entry")
+
+    with st.form("entry_form"):
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
+
+        with c1:
+            zone = st.selectbox("Zone *", ["Red", "Green", "Blue", "Yellow", "Other"])
+        with c2:
+            entry_date = st.date_input("Date *", value=date.today())
+        with c3:
+            shift = st.selectbox("Shift *", ["A", "B", "C", "General"])
+        with c4:
+            supervisor_name = st.text_input("Supervisor Name *")
+
+        st.markdown("### Quality & Machine Details")
+        d1, d2, d3, d4, d5 = st.columns(5)
+
+        with d1:
+            quality = st.number_input("Quality *", min_value=0.0, step=0.5)
+        with d2:
+            avg_count = st.number_input("Avg Count *", min_value=0.0, step=0.5)
+        with d3:
+            spindle = st.number_input("Spindle *", min_value=1, step=1)
+        with d4:
+            no_of_frame = st.number_input("No. of Frame *", min_value=1, step=1)
+        with d5:
+            no_of_winder = st.number_input("No. of Winder *", min_value=1, step=1)
+
+        st.markdown("### Production")
+        p1, p2, p3, p4 = st.columns(4)
+
+        with p1:
+            target_prod = st.number_input("Target Prod *", min_value=0, step=1)
+        with p2:
+            actual_prod = st.number_input("Actual Prod *", min_value=0, step=1)
+
+        diff = actual_prod - target_prod
+        kg_per_frame = round(actual_prod / no_of_frame)
+        kg_per_winder = round(actual_prod / no_of_winder)
+
+        with p3:
+            st.number_input("Kg / Frame", value=kg_per_frame, disabled=True)
+        with p4:
+            st.number_input("Kg / Winder", value=kg_per_winder, disabled=True)
+
+        submitted = st.form_submit_button("✅ Save Entry")
+
+    if submitted:
+        if not supervisor_name.strip():
+            st.error("Supervisor Name required")
+        elif abs(quality - avg_count) > 0.01:
+            st.error("Avg Count must match Quality")
+        else:
+            insert_row({
+                "zone": zone,
+                "entry_date": entry_date.isoformat(),
+                "shift": shift,
+                "supervisor_name": supervisor_name,
+                "quality": quality,
+                "avg_count": avg_count,
+                "spindle": spindle,
+                "no_of_frame": no_of_frame,
+                "no_of_winder": no_of_winder,
+                "target_prod": target_prod,
+                "actual_prod": actual_prod,
+                "kg_per_frame": kg_per_frame,
+                "kg_per_winder": kg_per_winder,
+                "diff": diff
+            })
+            st.success("Saved successfully ✅")
+
+    st.subheader("📄 Saved Data")
+    st.dataframe(fetch_all(), use_container_width=True)
+
+# =================================================
+# PAGE 2: REPORTS
+# =================================================
+if page == "📊 Reports":
+
+    st.title("📊 Weekly Management Reports")
+
+    df = fetch_all()
     if df.empty:
-        st.warning("⚠ No data available yet.")
+        st.warning("No data available yet.")
         st.stop()
 
     df["entry_date"] = pd.to_datetime(df["entry_date"])
     df["week"] = df["entry_date"].dt.isocalendar().week
     df["year"] = df["entry_date"].dt.year
-    return df
 
-df = load_data()
+    c1, c2 = st.columns(2)
+    year = c1.selectbox("Year", sorted(df["year"].unique(), reverse=True))
+    week = c2.selectbox("Week", sorted(df[df["year"] == year]["week"].unique()))
 
-# ------------------ HEADER ------------------
-st.title("📊 Spool Winding – Weekly Management Reports")
+    df_curr = df[(df["year"] == year) & (df["week"] == week)]
+    df_prev = df[(df["year"] == year) & (df["week"] == week - 1)]
 
-c1, c2 = st.columns(2)
+    st.subheader("📘 Zone & Quality Wise Report")
+    r1 = df_curr.groupby(["zone", "quality"]).agg(
+        Kg_Frame=("kg_per_frame", "mean"),
+        Kg_Winder=("kg_per_winder", "mean")
+    ).reset_index()
 
-with c1:
-    selected_year = st.selectbox(
-        "Select Year",
-        sorted(df["year"].unique(), reverse=True)
-    )
+    st.dataframe(r1.round(2), use_container_width=True)
 
-with c2:
-    selected_week = st.selectbox(
-        "Select Week",
-        sorted(df[df["year"] == selected_year]["week"].unique())
-    )
-
-df_curr = df[(df["year"] == selected_year) & (df["week"] == selected_week)]
-df_prev = df[(df["year"] == selected_year) & (df["week"] == selected_week - 1)]
-
-# Handle missing previous week safely
-if df_prev.empty:
-    df_prev = pd.DataFrame(columns=df_curr.columns)
-
-# ------------------ REPORT 1 ------------------
-st.subheader("📘 Report-1: Zone & Quality Wise (Weekly Comparison)")
-
-curr_r1 = (
-    df_curr.groupby(["zone", "quality"])
-    .agg(
-        kg_frame=("kg_per_frame", "mean"),
-        kg_winder=("kg_per_winder", "mean")
-    )
-    .reset_index()
-)
-
-prev_r1 = (
-    df_prev.groupby(["zone", "quality"])
-    .agg(
-        prev_kg_frame=("kg_per_frame", "mean"),
-        prev_kg_winder=("kg_per_winder", "mean")
-    )
-    .reset_index()
-)
-
-r1 = curr_r1.merge(prev_r1, on=["zone", "quality"], how="left")
-
-r1["Diff Kg/Frame"] = r1["kg_frame"] - r1["prev_kg_frame"].fillna(0)
-r1["Diff Kg/Winder"] = r1["kg_winder"] - r1["prev_kg_winder"].fillna(0)
-
-st.dataframe(r1.round(2), use_container_width=True)
-
-# ------------------ REPORT 2 ------------------
-st.subheader("📗 Report-2: Zone-wise Supervisor Performance")
-
-r2 = (
-    df_curr.groupby(["zone", "supervisor_name", "quality"])
-    .agg(
+    st.subheader("📗 Zone-wise Supervisor Report")
+    r2 = df_curr.groupby(["zone", "supervisor_name", "quality"]).agg(
         Machines=("no_of_frame", "sum"),
         Kg_Frame=("kg_per_frame", "mean"),
         Kg_Winder=("kg_per_winder", "mean"),
         Difference=("diff", "sum")
-    )
-    .reset_index()
-)
+    ).reset_index()
 
-st.dataframe(r2.round(2), use_container_width=True)
+    st.dataframe(r2.round(2), use_container_width=True)
 
-# ------------------ IMAGE GENERATOR ------------------
-def save_table_image(df, title, path):
-    fig, ax = plt.subplots(figsize=(14, len(df) * 0.45 + 2))
-    ax.axis("off")
+    def save_img(df, title, path):
+        fig, ax = plt.subplots(figsize=(14, len(df) * 0.45 + 2))
+        ax.axis("off")
+        ax.table(cellText=df.round(2).values, colLabels=df.columns, loc="center")
+        plt.title(title)
+        plt.savefig(path, bbox_inches="tight", dpi=200)
+        plt.close()
 
-    table = ax.table(
-        cellText=df.round(2).values,
-        colLabels=df.columns,
-        cellLoc="center",
-        loc="center"
-    )
+    if st.button("📤 Generate Reports"):
+        img1 = REPORT_DIR / f"Zone_Quality_Week_{week}.png"
+        img2 = REPORT_DIR / f"Zone_Supervisor_Week_{week}.png"
 
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 1.4)
+        save_img(r1, f"Zone & Quality – Week {week}", img1)
+        save_img(r2, f"Zone Supervisor – Week {week}", img2)
 
-    plt.title(title, fontsize=14, fontweight="bold", pad=20)
-    plt.savefig(path, bbox_inches="tight", dpi=200)
-    plt.close()
+        st.success("Reports generated")
 
-# ------------------ GENERATE REPORT BUTTON ------------------
-st.divider()
+        st.image(str(img1))
+        st.download_button("Download Report 1", open(img1, "rb"), file_name=img1.name)
 
-if st.button("📤 Generate WhatsApp-Ready Reports"):
-    img_r1 = REPORT_DIR / f"Report1_Week_{selected_week}.png"
-    img_r2 = REPORT_DIR / f"Report2_Week_{selected_week}.png"
-
-    save_table_image(
-        r1,
-        f"Zone & Quality Weekly Report – Week {selected_week}",
-        img_r1
-    )
-
-    save_table_image(
-        r2,
-        f"Zone-wise Supervisor Report – Week {selected_week}",
-        img_r2
-    )
-
-    st.success("✅ Reports generated successfully")
-
-st.subheader("📥 Download Reports")
-
-# ---- Report 1 ----
-st.image(str(img_r1))
-with open(img_r1, "rb") as f:
-    st.download_button(
-        label="⬇️ Download Report-1 (Zone & Quality)",
-        data=f,
-        file_name=img_r1.name,
-        mime="image/png"
-    )
-
-# ---- Report 2 ----
-st.image(str(img_r2))
-with open(img_r2, "rb") as f:
-    st.download_button(
-        label="⬇️ Download Report-2 (Zone Supervisor)",
-        data=f,
-        file_name=img_r2.name,
-        mime="image/png"
-    )
-
+        st.image(str(img2))
+        st.download_button("Download Report 2", open(img2, "rb"), file_name=img2.name)
