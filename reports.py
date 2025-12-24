@@ -4,6 +4,25 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import smtplib
+from email.message import EmailMessage
+
+# -------------------------------------------------
+# EMAIL (SMTP) CONFIG  ⚠️ TEMP: MOVE TO SECRETS LATER
+# -------------------------------------------------
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "prakhar.chandel@jute-india.com"
+SMTP_PASS = "yees jhwl rnxj jeyy"
+
+EMAIL_TO = [
+    "payal.sinha@jute-india.com",
+    "soham.panda@jute-india.com"
+]
+
+EMAIL_CC = []
+
+
 
 # -------------------------------------------------
 # PAGE CONFIG
@@ -80,6 +99,34 @@ def fetch_all():
 init_db()
 
 # -------------------------------------------------
+# EMAIL SENDER
+# -------------------------------------------------
+def send_email(subject, body, attachments):
+    msg = EmailMessage()
+    msg["From"] = SMTP_USER
+    msg["To"] = ", ".join(EMAIL_TO)
+    if EMAIL_CC:
+        msg["Cc"] = ", ".join(EMAIL_CC)
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    for file_path in attachments:
+        with open(file_path, "rb") as f:
+            data = f.read()
+        msg.add_attachment(
+            data,
+            maintype="image",
+            subtype="png",
+            filename=Path(file_path).name
+        )
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
+
+
+# -------------------------------------------------
 # SIDEBAR NAVIGATION
 # -------------------------------------------------
 st.sidebar.title("🧭 Navigation")
@@ -93,7 +140,7 @@ page = st.sidebar.radio(
 # =================================================
 if page == "📝 Daily Entry":
 
-    st.title("🧵 Spool Winding – Daily Production Entry")
+    st.title("🧵 Winding – Production Entry")
 
     with st.form("entry_form"):
         c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
@@ -167,6 +214,67 @@ if page == "📝 Daily Entry":
     st.subheader("📄 Saved Data")
     st.dataframe(fetch_all(), use_container_width=True)
 
+def title_case_df(df):
+    df = df.copy()
+    df.columns = [c.replace("_", " ").title() for c in df.columns]
+    return df
+
+
+def save_img(df, title, path):
+    gen_date = date.today().strftime("%d-%b-%Y")
+
+    fig_height = max(6, len(df) * 0.5 + 4)
+    fig, ax = plt.subplots(figsize=(16, fig_height))
+    ax.axis("off")
+
+    # ---- HEADER ----
+    # ---- HEADER ----
+    plt.text(
+        0.5, 0.97,
+        "HASTINGS JUTE MILL",
+        ha="center", va="center",
+        fontsize=22, fontweight="bold"
+    )
+
+    plt.text(
+        0.5, 0.90,   # 👈 MORE GAP BELOW MILL NAME
+        title,
+        ha="center", va="center",
+        fontsize=14, fontweight="bold"
+    )
+
+    plt.text(
+        0.5, 0.86,   # 👈 MORE GAP BELOW REPORT TITLE
+        f"Generated on: {gen_date}",
+        ha="center", va="center",
+        fontsize=10, style="italic"
+    )
+
+
+    # ---- TABLE ----
+    table = ax.table(
+        cellText=df.values,
+        colLabels=df.columns,
+        loc="center",
+        cellLoc="center"
+    )
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 1.6)
+
+    # ---- FOOTER ----
+    plt.text(
+        0.5, 0.02,
+        "For internal management use only",
+        ha="center", va="center",
+        fontsize=9, style="italic"
+    )
+
+    plt.savefig(path, bbox_inches="tight", dpi=300)
+    plt.close()
+
+
 # =================================================
 # PAGE 2: REPORTS
 # =================================================
@@ -190,15 +298,35 @@ if page == "📊 Reports":
     df_curr = df[(df["year"] == year) & (df["week"] == week)]
     df_prev = df[(df["year"] == year) & (df["week"] == week - 1)]
 
-    st.subheader("📘 Zone & Quality Wise Report")
-    r1 = df_curr.groupby(["zone", "quality"]).agg(
+    # -------------------------------------------------
+    # REPORT 1: ZONE & QUALITY (WEEKLY COMPARISON)
+    # -------------------------------------------------
+    st.subheader("📘 Zone & Quality Wise Report (Weekly Comparison)")
+
+    curr_r1 = df_curr.groupby(["zone", "quality"]).agg(
         Kg_Frame=("kg_per_frame", "mean"),
         Kg_Winder=("kg_per_winder", "mean")
     ).reset_index()
 
-    st.dataframe(r1.round(2), use_container_width=True)
+    prev_r1 = df_prev.groupby(["zone", "quality"]).agg(
+        Prev_Kg_Frame=("kg_per_frame", "mean"),
+        Prev_Kg_Winder=("kg_per_winder", "mean")
+    ).reset_index()
 
+    r1 = curr_r1.merge(prev_r1, on=["zone", "quality"], how="left")
+    r1["Diff Kg/Frame"] = r1["Kg_Frame"] - r1["Prev_Kg_Frame"].fillna(0)
+    r1["Diff Kg/Winder"] = r1["Kg_Winder"] - r1["Prev_Kg_Winder"].fillna(0)
+
+    r1 = r1.round(2)
+    r1_display = title_case_df(r1)
+
+    st.dataframe(r1_display, use_container_width=True)
+
+    # -------------------------------------------------
+    # REPORT 2: ZONE-WISE SUPERVISOR
+    # -------------------------------------------------
     st.subheader("📗 Zone-wise Supervisor Report")
+
     r2 = df_curr.groupby(["zone", "supervisor_name", "quality"]).agg(
         Machines=("no_of_frame", "sum"),
         Kg_Frame=("kg_per_frame", "mean"),
@@ -206,27 +334,70 @@ if page == "📊 Reports":
         Difference=("diff", "sum")
     ).reset_index()
 
-    st.dataframe(r2.round(2), use_container_width=True)
+    r2 = r2.round(2)
+    r2_display = title_case_df(r2)
 
-    def save_img(df, title, path):
-        fig, ax = plt.subplots(figsize=(14, len(df) * 0.45 + 2))
-        ax.axis("off")
-        ax.table(cellText=df.round(2).values, colLabels=df.columns, loc="center")
-        plt.title(title)
-        plt.savefig(path, bbox_inches="tight", dpi=200)
-        plt.close()
+    st.dataframe(r2_display, use_container_width=True)
 
-    if st.button("📤 Generate Reports"):
-        img1 = REPORT_DIR / f"Zone_Quality_Week_{week}.png"
-        img2 = REPORT_DIR / f"Zone_Supervisor_Week_{week}.png"
+    # -------------------------------------------------
+    # ACTION BUTTONS
+    # -------------------------------------------------
+    colA, colB = st.columns(2)
 
-        save_img(r1, f"Zone & Quality – Week {week}", img1)
-        save_img(r2, f"Zone Supervisor – Week {week}", img2)
+    with colA:
+        if st.button("📤 Generate Reports"):
+            img1 = REPORT_DIR / f"Zone_Quality_Week_{week}.png"
+            img2 = REPORT_DIR / f"Zone_Supervisor_Week_{week}.png"
 
-        st.success("Reports generated")
+            save_img(
+                r1_display,
+                f"Zone & Quality Wise Weekly Report – Week {week}",
+                img1
+            )
 
-        st.image(str(img1))
-        st.download_button("Download Report 1", open(img1, "rb"), file_name=img1.name)
+            save_img(
+                r2_display,
+                f"Zone-wise Supervisor Performance Report – Week {week}",
+                img2
+            )
 
-        st.image(str(img2))
-        st.download_button("Download Report 2", open(img2, "rb"), file_name=img2.name)
+            st.success("Reports generated successfully ✅")
+
+            st.image(str(img1))
+            st.download_button(
+                "⬇️ Download Report 1",
+                open(img1, "rb"),
+                file_name=img1.name
+            )
+
+            st.image(str(img2))
+            st.download_button(
+                "⬇️ Download Report 2",
+                open(img2, "rb"),
+                file_name=img2.name
+            )
+
+    with colB:
+        if st.button("✉️ Email Reports to Management"):
+            img1 = REPORT_DIR / f"Zone_Quality_Week_{week}.png"
+            img2 = REPORT_DIR / f"Zone_Supervisor_Week_{week}.png"
+
+            if not img1.exists() or not img2.exists():
+                st.error("Please generate reports first.")
+            else:
+                send_email(
+                    subject=f"Hastings Jute Mill – Weekly Spool Winding Report (Week {week}, {year})",
+                    body=f"""Dear Sir,
+
+Please find attached the weekly Spool Winding reports of Hastings Jute Mill.
+
+1. Zone & Quality-wise report with weekly comparison
+2. Zone-wise Supervisor performance report
+
+Regards,
+Hastings Jute Mill
+""",
+                    attachments=[img1, img2]
+                )
+                st.success("Email sent successfully ✅")
+
